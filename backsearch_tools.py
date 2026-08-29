@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from tools.registry import tool_error, tool_result
@@ -46,11 +47,14 @@ DEFAULT_BASE_URL = "https://search.openreward.ai"
 # Preview-archive window (see module docstring). Used only to append a
 # helpful hint on empty results — never to reject a request, since the
 # archive is expected to widen over time.
+_PREVIEW_WINDOW_START = "2025-12-01"
+_PREVIEW_WINDOW_END = "2026-07-31"
 _PREVIEW_WINDOW_HINT = (
     "The current BackSearch preview archive covers news domains from "
     "December 2025 to July 2026. An as_of outside that window returns "
     "no hits rather than an error."
 )
+_EMPTY_IN_WINDOW_NOTE = "No documents matched this query on or before as_of."
 
 _AS_OF_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -135,7 +139,17 @@ def _validate_as_of(raw: Any) -> str:
         raise ValueError(
             f"as_of must be an ISO date (YYYY-MM-DD), got: {as_of!r}"
         )
+    try:
+        date.fromisoformat(as_of)
+    except ValueError:
+        raise ValueError(
+            f"as_of must be a real calendar date (YYYY-MM-DD), got: {as_of!r}"
+        ) from None
     return as_of
+
+
+def _outside_preview_window(as_of: str) -> bool:
+    return as_of < _PREVIEW_WINDOW_START or as_of > _PREVIEW_WINDOW_END
 
 
 def _as_domain_list(raw: Any) -> Optional[List[str]]:
@@ -224,7 +238,11 @@ def handle_backsearch(args: dict, **kw) -> str:
         ],
     }
     if not hits:
-        results["note"] = _PREVIEW_WINDOW_HINT
+        results["note"] = (
+            _PREVIEW_WINDOW_HINT
+            if _outside_preview_window(as_of)
+            else _EMPTY_IN_WINDOW_NOTE
+        )
     return tool_result(results)
 
 
@@ -265,24 +283,32 @@ def handle_backfetch(args: dict, **kw) -> str:
         logger.warning("BackSearch fetch error: %s", exc)
         return tool_error(f"BackSearch fetch failed: {exc}")
 
+    summary = str(raw.get("summary") or "").strip()
     text = str(raw.get("text") or "")
-    truncated = len(text) > _FETCH_TEXT_CAP
+    body = summary if prompt and summary else text
+    truncated = len(body) > _FETCH_TEXT_CAP
     result: Dict[str, Any] = {
         "success": True,
         "as_of": as_of,
         "url": url,
-        "text": text[:_FETCH_TEXT_CAP],
+        "text": body[:_FETCH_TEXT_CAP],
     }
     for key in ("title", "crawl_date", "publish_date", "host"):
         if raw.get(key):
             result[key] = raw[key]
     if truncated:
         result["truncated"] = True
-        result["note"] = (
-            f"Article text truncated to {_FETCH_TEXT_CAP} chars. Re-fetch "
-            "with a 'prompt' describing what to extract for a focused summary."
-        )
-    if not text:
+        if prompt:
+            result["note"] = (
+                f"Article text truncated to {_FETCH_TEXT_CAP} chars."
+            )
+        else:
+            result["note"] = (
+                f"Article text truncated to {_FETCH_TEXT_CAP} chars. Re-fetch "
+                "with a 'prompt' describing what to extract for a focused "
+                "summary."
+            )
+    if not body:
         result["success"] = False
         result["error"] = "No text returned for this capture."
     return json.dumps(result, ensure_ascii=False)
