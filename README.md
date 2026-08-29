@@ -1,5 +1,7 @@
 # hermes-plugin-backsearch
 
+![BackSearch — search the web as it was](https://v3b.fal.media/files/b/0aa84975/CyEGZq8lccVZUWQpoxHF1_2C7j8lCa.png)
+
 Point-in-time web search & fetch for [Hermes Agent](https://github.com/NousResearch/hermes-agent), backed by [BackSearch by General Reasoning](https://www.gr.inc/releases/introducing-backsearch).
 
 BackSearch is a **frozen news archive**: every request carries an `as_of` date, search returns only documents *crawled* on or before it, and fetch returns the article text as archived at that time. Same query + same `as_of` = same results, forever. Built for forecasting backtests, quant research loops, RL environments, and reproducible benchmarks — any task where evidence after a cutoff date must not leak in.
