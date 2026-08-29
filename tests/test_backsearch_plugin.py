@@ -94,10 +94,21 @@ class TestAsOfValidation:
     def test_valid(self):
         assert _validate_as_of("2026-01-15") == "2026-01-15"
 
-    @pytest.mark.parametrize("bad", ["", None, "01/15/2026", "2026-1-5", "jan 15"])
+    @pytest.mark.parametrize(
+        "bad",
+        ["", None, "01/15/2026", "2026-1-5", "jan 15", "2026-02-31", "2026-13-01"],
+    )
     def test_invalid(self, bad):
         with pytest.raises(ValueError):
             _validate_as_of(bad)
+
+    def test_impossible_calendar_date_does_not_call_api(self):
+        with patch("httpx.post") as post:
+            out = json.loads(
+                handle_backsearch({"query": "x", "as_of": "2026-02-31"})
+            )
+        post.assert_not_called()
+        assert "calendar" in out["error"].lower() or "as_of" in out["error"]
 
     def test_handler_surfaces_as_of_error(self):
         out = json.loads(handle_backsearch({"query": "x", "as_of": "not-a-date"}))
@@ -136,10 +147,20 @@ class TestSearch:
         assert body["as_of"] == "2026-01-15"
         assert body["query"] == "central bank"
 
-    def test_empty_hits_appends_archive_window_hint(self):
+    def test_empty_hits_in_window_are_just_no_matches(self):
         with patch("httpx.post", return_value=_mock_response(200, {"hits": []})):
             out = json.loads(
                 handle_backsearch({"query": "anything", "as_of": "2026-01-15"})
+            )
+        assert out["success"] is True
+        assert out["hits"] == []
+        assert "preview archive" not in out["note"]
+        assert "No documents matched" in out["note"]
+
+    def test_empty_hits_outside_window_mention_preview_archive(self):
+        with patch("httpx.post", return_value=_mock_response(200, {"hits": []})):
+            out = json.loads(
+                handle_backsearch({"query": "anything", "as_of": "2020-01-01"})
             )
         assert out["success"] is True
         assert out["hits"] == []
@@ -282,6 +303,70 @@ class TestFetch:
             )
         assert out["truncated"] is True
         assert len(out["text"]) == _FETCH_TEXT_CAP
+        assert "prompt" in out["note"]
+
+    def test_fetch_prompt_prefers_summary(self):
+        from backsearch_tools import _FETCH_TEXT_CAP
+
+        with patch(
+            "httpx.post",
+            return_value=_mock_response(
+                200,
+                {
+                    "text": "x" * (_FETCH_TEXT_CAP + 100),
+                    "summary": "The bank cut rates 25bp.",
+                },
+            ),
+        ):
+            out = json.loads(
+                handle_backfetch(
+                    {
+                        "url": "https://example.com/a",
+                        "as_of": "2026-01-15",
+                        "prompt": "what rate?",
+                    }
+                )
+            )
+        assert out["success"] is True
+        assert out["text"] == "The bank cut rates 25bp."
+        assert out.get("truncated") is not True
+
+    def test_fetch_prompt_falls_back_to_text_when_no_summary(self):
+        with patch(
+            "httpx.post",
+            return_value=_mock_response(200, {"text": "full article body"}),
+        ):
+            out = json.loads(
+                handle_backfetch(
+                    {
+                        "url": "https://example.com/a",
+                        "as_of": "2026-01-15",
+                        "prompt": "what rate?",
+                    }
+                )
+            )
+        assert out["text"] == "full article body"
+
+    def test_fetch_prompt_truncation_note_does_not_ask_for_prompt(self):
+        from backsearch_tools import _FETCH_TEXT_CAP
+
+        with patch(
+            "httpx.post",
+            return_value=_mock_response(
+                200, {"text": "x" * (_FETCH_TEXT_CAP + 100)}
+            ),
+        ):
+            out = json.loads(
+                handle_backfetch(
+                    {
+                        "url": "https://example.com/a",
+                        "as_of": "2026-01-15",
+                        "prompt": "what rate?",
+                    }
+                )
+            )
+        assert out["truncated"] is True
+        assert "prompt" not in out["note"]
 
     def test_base_url_override(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("OPENREWARD_SEARCH_URL", "http://localhost:9999/")
